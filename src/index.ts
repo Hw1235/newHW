@@ -1,8 +1,9 @@
-import { serve } from "@hono/node-server";
+import { getRequestListener, serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { cors } from "hono/cors";
 import { compress } from "hono/compress";
+import { createServer } from "node:http";
 import {
   createNote,
   Note,
@@ -12,6 +13,7 @@ import {
   getPaginate,
   getNoteByText,
 } from "./notes";
+import { rateLimit } from "./rate-limit";
 import {
   CreateNoteRequestSchema,
   getPaginateNotesSchema,
@@ -31,9 +33,7 @@ app.use(
     origin: ["https://seen.red"],
   })
 );
-
-// TODO: Pagination
-// CREATe
+//CREATE
 app.post("/", async (c) => {
   // const data = await c.req.json();
   let data: Note;
@@ -46,6 +46,7 @@ app.post("/", async (c) => {
     return c.json({
       success: false,
       message: "Invalid JSON in the request body",
+      error: error.message, //retir
     });
   }
 
@@ -60,12 +61,12 @@ app.post("/", async (c) => {
   }
 
   // Database Error Handling
-  let success = true;
-  let message = "Successfully retrieved";
-  let notes: Note[];
 
   const validatedData = validation.data;
 
+  let success = true;
+  let message = "Successfully retrieved";
+  let notes: Note[];
   try {
   } catch (error) {
     c.status(500);
@@ -82,10 +83,9 @@ app.post("/", async (c) => {
   }
 
   const newNote: Partial<Note> = {
-    text: validatedData.text,
-    date: new Date(validatedData.date || Date.now()),
+    text: data.text,
+    date: new Date(data.date),
   };
-
   // Handle createNote() Errors
   let dbNote: Note;
 
@@ -102,9 +102,10 @@ app.post("/", async (c) => {
 
   console.log({ dbNote });
 
-  return c.json({ success, message, note: dbNote });
+  return c.json({ message: "successfully added the note", note: dbNote });
 });
 
+//READ
 app.get("/:id", async (c) => {
   const result = getSingleNoteSchema.safeParse(c.req.param("id"));
 
@@ -166,7 +167,7 @@ app.put("/:id", async (c) => {
     });
   }
 
-  const id = result.data;
+  // const id = result.data;
 
   const validation = updateNoteRequestSchema.safeParse(data);
 
@@ -241,7 +242,7 @@ app.delete("/:id", async (c) => {
 
   let success = true;
   let message = "Successfully retrieved";
-  let notes: Note[];
+  // let notes: Note[];
 
   try {
     const found = await getNote(result.data);
@@ -257,15 +258,6 @@ app.delete("/:id", async (c) => {
     console.error("DB connection error.", error);
     return c.json({ success, message });
   }
-
-  // const found = await getNote(result.data);
-
-  // if (!found) {
-  //   c.status(404);
-  //   return c.json({ success: false, message: "Note not found in database." });
-  // }
-
-  // notes.splice(found, 1);
 
   try {
     await deleteNote(id);
@@ -311,5 +303,18 @@ app.get("/", async (c) => {
 
   return c.json({ success, message, notes });
 });
+serve({
+  fetch: app.fetch,
+  createServer: () => {
+    const rateLimiter = rateLimit();
 
-serve(app);
+    const server = createServer((req, res) => {
+      if (rateLimiter.passed({ req, res })) {
+        const requestListener = getRequestListener(app.fetch);
+        requestListener(req, res);
+      }
+    });
+
+    return server;
+  },
+});
